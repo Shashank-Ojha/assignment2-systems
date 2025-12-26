@@ -86,7 +86,7 @@ def forward_backward_pass(batch_size, llm_params, device, model):
     return (forward_pass_time, backward_pass_time)
 
 
-def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, device):
+def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, device, compile):
     device = DEVICE_CUDA if (device == DEVICE_CUDA and torch.cuda.is_available()) else device
     if device == DEVICE_CUDA:
         torch.set_float32_matmul_precision("high")
@@ -104,9 +104,9 @@ def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, dev
         device=device,
     )
 
-    if device == DEVICE_MPS:
+    if device == DEVICE_MPS and compile:
         model = torch.compile(model, backend="aot_eager")
-    elif device == DEVICE_CUDA:
+    elif device == DEVICE_CUDA and compile:
         model = torch.compile(model)
 
     opt = AdamW(model.parameters(), opt_params.min_lr, opt_params.betas, opt_params.weight_decay, opt_params.eps)
@@ -179,7 +179,15 @@ def main():
         help="Device to use (cpu, cuda, mps)",
     )
 
+    parser.add_argument(
+        "--compile",
+        type=bool,
+        default=False,
+        help="Whether to compile the model",
+    )
+
     args = parser.parse_args()
+    print("compile:", bool(args.compile))
 
     llm_params, opt_params = CONFIGS[args.config]
 
@@ -193,6 +201,7 @@ def main():
         args.warmup_steps,
         args.benchmark_steps,
         args.device,
+        bool(args.compile),
     )
 
 
