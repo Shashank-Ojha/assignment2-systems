@@ -71,22 +71,32 @@ def forward_backward_pass(batch_size, llm_params, device, model):
         device,
     )
 
-    forward_pass_start_time = timeit.default_timer()
+    # Forward pass timing
+    if device == DEVICE_CUDA:
+        torch.cuda.synchronize()  # Wait for any previous operations
+    forward_start = timeit.default_timer()
 
     # (B, T, V)
     logits = model(xb)
+    if device == DEVICE_CUDA:
+        torch.cuda.synchronize()  # Ensure forward pass is complete
+    forward_time = timeit.default_timer() - forward_start
 
-    forward_pass_time = timeit.default_timer() - forward_pass_start_time
-
-    backward_pass_start_time = timeit.default_timer()
+    # Backward pass timing
     loss = cross_entropy_loss(logits, yb)
+    if device == DEVICE_CUDA:
+        torch.cuda.synchronize()  # Ensure any operations before backward are complete
+    backward_start = timeit.default_timer()
+
     loss.backward()
+    if device == DEVICE_CUDA:
+        torch.cuda.synchronize()  # Ensure backward pass is complete
+    backward_time = timeit.default_timer() - backward_start
 
-    backward_pass_time = timeit.default_timer() - backward_pass_start_time
-    return (forward_pass_time, backward_pass_time)
+    return (forward_time, backward_time)
 
 
-def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, device, compile):
+def train(batch_size, llm_params, warmup_steps, benchmark_steps, device, compile):
     device = DEVICE_CUDA if (device == DEVICE_CUDA and torch.cuda.is_available()) else device
     if device == DEVICE_CUDA:
         torch.set_float32_matmul_precision("high")
@@ -108,15 +118,6 @@ def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, dev
         model = torch.compile(model, backend="aot_eager")
     elif device == DEVICE_CUDA and compile:
         model = torch.compile(model)
-
-    opt = AdamW(model.parameters(), opt_params.min_lr, opt_params.betas, opt_params.weight_decay, opt_params.eps)
-
-    xb, yb = get_random_batch(
-        batch_size,
-        llm_params.context_length,
-        llm_params.vocab_size,
-        device,
-    )
 
     benchmark(
         "Forward+backward pass",
@@ -189,7 +190,7 @@ def main():
     args = parser.parse_args()
     print("compile:", bool(args.compile))
 
-    llm_params, opt_params = CONFIGS[args.config]
+    llm_params, _ = CONFIGS[args.config]
 
     # Update LLM Params.
     llm_params.context_length = args.context_length
@@ -197,7 +198,6 @@ def main():
     train(
         args.batch_size,
         llm_params,
-        opt_params,
         args.warmup_steps,
         args.benchmark_steps,
         args.device,
