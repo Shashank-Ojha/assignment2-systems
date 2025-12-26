@@ -4,6 +4,7 @@ import argparse
 import torch
 import timeit
 from collections.abc import Callable
+import numpy as np
 
 from cs336_systems.configs import CONFIGS
 from cs336_basics.models import Transformer
@@ -30,18 +31,27 @@ def benchmark(
         torch.cuda.synchronize()  # Wait for CUDA threads to finish (important!)
 
     # Time it for real now!
-    times: list[float] = []  # @inspect times, @inspect description
+    fwd_times: list[float] = []
+    backward_times: list[float] = []
     for trial in range(num_trials):  # Do it multiple times to capture variance
-        time = timeit.timeit(lambda: run(*args), number=1)
-        run(*args)  # Actually perform computation
-        times.append(time * 1000)  # @inspect times
+        (fwd_pass_time, backward_pass_time) = run(*args)  # Actually perform computation
+        fwd_times.append(fwd_pass_time * 1000)
+        backward_times.append(backward_pass_time * 1000)
 
         if torch.cuda.is_available() and device == DEVICE_CUDA:
             torch.cuda.synchronize()  # Wait for CUDA threads to finish (important!)
 
-    mean_time = sum(times) / len(times)  # @inspect mean_time
-    print(f"{description}: {mean_time:.2f} ms")
-    return mean_time
+    def compute_mean_and_std_dev(times):
+        mean = np.mean(times)
+        std_dev = np.std(times)
+        return mean, std_dev
+
+    fwd_mean, fwd_std = compute_mean_and_std_dev(fwd_times)
+    bwd_mean, bwd_std = compute_mean_and_std_dev(backward_times)
+
+    print(f"{description} - Forward: {fwd_mean:.2f} ± {fwd_std:.2f} ms")
+    print(f"{description} - Backward: {bwd_mean:.2f} ± {bwd_std:.2f} ms")
+    return fwd_mean, bwd_mean
 
 
 def get_random_batch(batch_size, context_length, vocab_size, device):
@@ -53,7 +63,7 @@ def get_random_batch(batch_size, context_length, vocab_size, device):
     return x_b, y_b
 
 
-def forward_backward_pass(batch_size, llm_params, device, model, opt):
+def forward_backward_pass(batch_size, llm_params, device, model):
     xb, yb = get_random_batch(
         batch_size,
         llm_params.context_length,
@@ -61,15 +71,19 @@ def forward_backward_pass(batch_size, llm_params, device, model, opt):
         device,
     )
 
+    forward_pass_start_time = timeit.default_timer()
+
     # (B, T, V)
     logits = model(xb)
 
-    opt.zero_grad()
+    forward_pass_time = timeit.default_timer() - forward_pass_start_time
 
+    backward_pass_start_time = timeit.default_timer()
     loss = cross_entropy_loss(logits, yb)
     loss.backward()
 
-    opt.step()
+    backward_pass_time = timeit.default_timer() - backward_pass_start_time
+    return (forward_pass_time, backward_pass_time)
 
 
 def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, device):
@@ -97,10 +111,17 @@ def train(batch_size, llm_params, opt_params, warmup_steps, benchmark_steps, dev
 
     opt = AdamW(model.parameters(), opt_params.min_lr, opt_params.betas, opt_params.weight_decay, opt_params.eps)
 
+    xb, yb = get_random_batch(
+        batch_size,
+        llm_params.context_length,
+        llm_params.vocab_size,
+        device,
+    )
+
     benchmark(
         "Forward+backward pass",
         forward_backward_pass,
-        (batch_size, llm_params, device, model, opt),
+        (batch_size, llm_params, device, model),
         warmup_steps,
         benchmark_steps,
         device,
